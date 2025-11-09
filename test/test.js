@@ -9,7 +9,7 @@ async function testAPI() {
             headers : {"Content-Type":"application/json" },
             body:JSON.stringify({
                 code: codesn,
-                filename: "sample.py"
+                file: "sample.py"
             })
         });
         const result= await resp.json();
