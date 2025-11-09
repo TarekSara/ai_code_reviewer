@@ -1,79 +1,94 @@
 <?php
 
-header("Content-Type:application/json");
-require_once "config.php";
+$config= require "config.php";
+$apikey= $config['api_key'];
+$severities= $config['severities'];
 
-$input= json_decode(file_get_contents("php://input"),true);
+header("Content-Type: application/json");
 
-
-if (!$input || !isset($input["code"]) || !isset($input["file"])){
-    echo json_encode(["error" => "Invalid input format expected JSON with code and file"]);
+if ($_SERVER["REQUEST_METHOD"] !== "POST") {
+echo json_encode(["error" => "Only POST allowed"]);
+exit;
 }
 
-$file=$input["file"];
-$code=$input["code"];
-$prompt="You are an expert code reviewer.
-You will receive a code snippet and return a JSON array of review items.
-Each item MUST strictly follow this format:
+$contentType = $_SERVER["CONTENT_TYPE"] ?? '';
+if (!preg_match("/application\/json/i", $contentType)) {
+echo json_encode(["error" => "Content-Type must be application/json"]);
+exit;
+}
+
+$php_input = file_get_contents("php://input");
+$data = json_decode($php_input,true);
+
+if(!$data || !isset($data["code"]) || !isset($data["file"])) {
+echo json_encode(["error"=>"Missing code or file in request"]);
+exit;
+}
+
+$file= $data["file"];
+$code= $data["code"];
+$prompt = "You are an expert code reviewer.
+You will receive a code snippet and return a JSON array containing **exactly one review item**.
+The review item must strictly follow this format:
 [
   {
     \"severity\": \"low | medium | high\",
     \"file\": \"string\",
-    \"issue\": \"short identifier of the problem\",
+    \"issue\": \"short identifier of the most important problem\",
     \"suggestion\": \"concrete remediation step\"
   }
 ]
 Code file name: $file
-Code snippet:$code
-Return only the JSON array, no explanations.
-";
-$ch=curl_init("https://api.openai.com/v1/chat/completions");
-$curl_setopt_array($ch,[
-    CURLOPT_RETURNTRANSFER =>true,
-    CURLOPT_HTTPHEADER => [
-        "Content-Type:application/json",
-        "Authorization : Bearer" . OPENAI_KEY
-    ],
-    CURLOPT_POST =>true,
-    CURLOPT_POSTFIELDS => json_encode([
-        "model" => "gpt-4o-mini",
-        "messages" => [["role"=> "user", "content " => $prompt]],
-        "temprature" =>0.1
-    ])
-]);
+Code snippet:
+$code
+Return only the JSON array, no explanations.";
 
-$response=curl_exec($ch);
 
-if (curl_errno($ch)){
-    echo json_encode(["error" => curl_error($ch)]);
+$url = "https://api.openai.com/v1/chat/completions";
+
+$postData = [
+"model" => "gpt-4",
+"messages" => [ ["role" => "user", "content" => $prompt] ],
+"temperature" => 0
+];
+
+$options = [
+"http" => [
+"header" => "Content-type: application/json\r\nAuthorization: Bearer $apikey\r\n",
+"method" => "POST",
+"content" => json_encode($postData)
+]
+];
+
+$context = stream_context_create($options);
+$result = @file_get_contents($url, false, $context);
+
+if ($result === FALSE) {
+$review = [
+[
+"file" => $file,
+"severity" => "low",
+"issue" => "Failed to contact AI API",
+"suggestion" => "Check API Key or connection"
+]
+];
+} else {
+$resJson = json_decode($result, true);
+$aiText = $resJson["choices"][0]["message"]["content"] ?? "";
+
+$review = json_decode($aiText, true);
+
+if (!$review) {
+$review = [
+[
+"file" => $file,
+"severity" => "low",
+"issue" => "AI failed to generate JSON",
+"suggestion" => "Check API response"
+]
+];
 }
-curl_close($ch);
-$data=json_decode($response,true);
-$ai_reply =$data["choices"][0]["message"]["content"];
-$json_output=json_decode($ai_reply,true);
-
-$allowed=ALLOWED_SEVERITIES;
-$validated=[];
-foreach($json_output as $item){
-    if (isset($item["file"],$item["severity"],$item["issue"],$item["suggestion"] && in_array($item["severity"],allowed)))
-{
-    $validated[]=
-    [
-        "file" => $item["file"],
-        "severity" => $item["severity"],
-        "issue" => $item["issue"],
-        "suggestion" =>$item["suggestion"]
-    ];
-}}
-
-if (empty($validated)) {
-    $validated[] = [
-        "file" => $file,
-        "severity" => "low",
-        "issue" => "No valid issues found or schema mismatch",
-        "suggestion" => "Ensure the AI returns correct structure"
-    ];
 }
-echo json_encode($validated,JSON_PRETTY_PRINT);
+
+echo json_encode($review);
 ?>
-
